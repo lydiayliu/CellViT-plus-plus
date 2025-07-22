@@ -377,9 +377,9 @@ class CellViTInference:
                 "PYTHONPATH": project_root
             }
         }
-        ray.init(num_cpus=os.cpu_count() - 2, runtime_env=runtime_env)
+        ray.init(num_cpus=14, runtime_env=runtime_env)
         # workers for loading data
-        num_workers = int(3 / 4 * os.cpu_count())
+        num_workers = int(3 / 4 * 16)
         if num_workers is None:
             num_workers = 16
         num_workers = int(np.clip(num_workers, 1, 4 * self.batch_size))
