@@ -372,19 +372,59 @@ class CellViTInference:
 
     def _setup_worker(self) -> None:
         """Setup the worker for inference"""
-        runtime_env = {
-            "env_vars": {
-                "PYTHONPATH": project_root
-            }
-        }
-        ray.init(num_cpus=14, runtime_env=runtime_env)
+        runtime_env = {"env_vars": {"PYTHONPATH": project_root}}
+        # Set the global logging settings
+
+        # if self.debug:
+        #     include_dashboard = (
+        #         ray._private.utils.check_dashboard_dependencies_installed()
+        #     )
+        #     logging_level = logging.DEBUG
+        # else:
+        #     include_dashboard = False
+        #     logging_level = logging.INFO
+
+        # # ray logger setup
+        # formatter = None
+        # if self.logger.handlers:
+        #     for handler in self.logger.handlers:
+        #         if isinstance(handler, logging.StreamHandler) and hasattr(
+        #             handler, "formatter"
+        #         ):
+        #             formatter = handler.formatter
+        #             break
+
+        # init ray
+        ray.init(
+            num_cpus= 32 - 2, # hardcode number of cpus at 32
+            runtime_env=runtime_env,
+            object_store_memory=0.3 * 131072 * 1024 * 1024, # hardcode memory at 128G (131071M)
+            include_dashboard=False,
+            # logging_level=logging.INFO,
+            log_to_driver=True,
+        )
+        # # overwrite rays logger style
+        # if formatter is not None:
+        #     ray_loggers = [
+        #         logging.getLogger("ray"),
+        #         logging.getLogger("ray.worker"),
+        #         logging.getLogger("ray.remote_function"),
+        #         logging.getLogger("ray._private"),  # Covers internal modules
+        #     ]
+
+        #     for ray_logger in ray_loggers:
+        #         # Modify existing handlers (preserves Ray's logging destinations)
+        #         for handler in ray_logger.handlers:
+        #             if isinstance(handler, logging.StreamHandler):
+        #                 handler.setFormatter(formatter)
+
         # workers for loading data
-        num_workers = int(3 / 4 * 16)
+        num_workers = int(3 / 4 * 32) # hardcode number of cpus at 32
         if num_workers is None:
-            num_workers = 16
+            num_workers = 8
         num_workers = int(np.clip(num_workers, 1, 4 * self.batch_size))
         self.num_workers = num_workers
-        self.ray_actors = int(np.clip(1 / 2 * self.batch_size, 4, 8))
+        self.ray_actors = 7 # hardcode number of ray workers at 7
         self.logger.info(f"Using {self.ray_actors} ray-workers")
 
     def process_wsi(
