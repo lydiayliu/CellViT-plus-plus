@@ -95,6 +95,22 @@ class InferenceWSIParser:
             action="store_true",
             help="Set this flag to export results as snappy compressed file",
         )
+        parser.add_argument(
+            "--cpu_count", type=int, help="Number of CPU cores to use for inference"
+        )
+        parser.add_argument(
+            "--memory", type=int, help="RAM in MB to use"
+        )
+        parser.add_argument(
+            "--ray_worker",
+            type=int,
+            help="Number of ray worker to use for inference (each ray worker uses 4-8 CPUs)",
+        )
+        parser.add_argument(
+            "--ray_remote_cpus",
+            type=int,
+            help="Number of CPUs per ray worker (MUST ensure that ray_remote_cpus * ray_worker <= cpu_count - 2)"
+        )
         subparsers = parser.add_subparsers(
             dest="command",
             description="Main run command for either performing inference on single WSI-file or on whole dataset",

@@ -34,6 +34,8 @@ __pycache__/
 # other
 .DS_Store
 cufile.log
+*.err
+*.out
 
 # local testing and checkpoints
 /logs_local

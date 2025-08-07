@@ -23,7 +23,7 @@ from cellvit.data.dataclass.cell_graph import CellGraphDataWSI
 from cellvit.data.dataclass.wsi import WSIMetadata
 from cellvit.inference.inference_disk import CellViTInference
 from cellvit.inference.postprocessing_cupy import (
-    BatchPoolingActor,
+    create_batch_pooling_actor,
     DetectionCellPostProcessorCupy,
 )
 from pathopatch.patch_extraction.dataset import (
@@ -50,6 +50,10 @@ class CellViTInferenceMemory(CellViTInference):
         graph: bool = False,
         compression: bool = False,
         enforce_mixed_precision: bool = False,
+        cpu_count: int = 16,
+        memory: int = 32768,
+        ray_worker: int =  2,
+        ray_remote_cpus: int =  6,
     ) -> None:
         super(CellViTInferenceMemory, self).__init__(
             model_path=model_path,
@@ -63,6 +67,10 @@ class CellViTInferenceMemory(CellViTInference):
             graph=graph,
             compression=compression,
             enforce_mixed_precision=enforce_mixed_precision,
+            cpu_count=cpu_count,
+            memory=memory,
+            ray_worker=ray_worker,
+            ray_remote_cpus=ray_remote_cpus,
         )
         self.outdir = Path(outdir)
 
@@ -126,6 +134,12 @@ class CellViTInferenceMemory(CellViTInference):
         self.outdir.mkdir(exist_ok=True, parents=True)
 
         # global postprocessor
+        BatchPoolingActor = create_batch_pooling_actor(
+            # use number of ray worker cpus from args
+            num_cpus = self.ray_remote_cpus
+        )
+        self.logger.info(f"Using {self.ray_remote_cpus} CPUs per ray worker")
+
         postprocessor = DetectionCellPostProcessorCupy(
             wsi=wsi,
             nr_types=self.run_conf["data"]["num_nuclei_classes"],

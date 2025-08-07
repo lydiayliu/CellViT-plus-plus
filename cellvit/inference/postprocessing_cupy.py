@@ -5,6 +5,7 @@
 # Institute for Artifical Intelligence in Medicine,
 # University Medicine Essen
 
+from os import environ
 from typing import List, Tuple, Union
 from torch import nn
 import cupy as cp
@@ -580,223 +581,250 @@ class DetectionCellPostProcessorCupy:
         return int(inst_type), float(type_prob)
 
 
-@ray.remote(num_cpus=8, num_gpus=0.1)
-class BatchPoolingActor:
-    def __init__(
-        self,
-        detection_cell_postprocessor: DetectionCellPostProcessorCupy,
-        run_conf: dict,
-    ) -> None:
-        """Ray Actor for coordinating the postprocessing of **one** batch
+def create_batch_pooling_actor(num_cpus: int = 8):
+    num_gpus = 0.1
+    if environ.get("RAY_GPUS_DEACTIVATION") is not None:
+        if environ.get("RAY_GPUS_DEACTIVATION") == "1":
+            num_gpus = 0
 
-        The postprocessing is done in a separate process to avoid blocking the main process.
-        The calculation is done with the help of the `DetectionCellPostProcessorCupy` class.
-        This actor acts as a coordinator for the postprocessing of one batch and a wrapper for the `DetectionCellPostProcessorCupy` class.
+    @ray.remote(num_cpus=num_cpus, num_gpus=num_gpus)
+    class BatchPoolingActor:
+        def __init__(
+            self,
+            detection_cell_postprocessor: DetectionCellPostProcessorCupy,
+            run_conf: dict,
+        ) -> None:
+            """Ray Actor for coordinating the postprocessing of **one** batch
 
-        Args:
-            detection_cell_postprocessor (DetectionCellPostProcessorCupy): Instance of the `DetectionCellPostProcessorCupy` class
-            run_conf (dict): Run configuration
-        """
-        assert "dataset_config" in run_conf, "dataset_config must be in run_conf"
-        assert (
-            "nuclei_types" in run_conf["dataset_config"]
-        ), "nuclei_types must be in run_conf['dataset_config']"
-        assert "model" in run_conf, "model must be in run_conf"
-        assert (
-            "token_patch_size" in run_conf["model"]
-        ), "token_patch_size must be in run_conf['model']"
+            The postprocessing is done in a separate process to avoid blocking the main process.
+            The calculation is done with the help of the `DetectionCellPostProcessorCupy` class.
+            This actor acts as a coordinator for the postprocessing of one batch and a wrapper for the `DetectionCellPostProcessorCupy` class.
 
-        self.detection_cell_postprocessor = detection_cell_postprocessor
-        self.run_conf = run_conf
+            Args:
+                detection_cell_postprocessor (DetectionCellPostProcessorCupy): Instance of the `DetectionCellPostProcessorCupy` class
+                run_conf (dict): Run configuration
+            """
+            assert "dataset_config" in run_conf, "dataset_config must be in run_conf"
+            assert (
+                "nuclei_types" in run_conf["dataset_config"]
+            ), "nuclei_types must be in run_conf['dataset_config']"
+            assert "model" in run_conf, "model must be in run_conf"
+            assert (
+                "token_patch_size" in run_conf["model"]
+            ), "token_patch_size must be in run_conf['model']"
 
-    def convert_batch_to_graph_nodes(
-        self, predictions: dict, metadata: List[dict]
-    ) -> Tuple[List[dict], List[dict], List[torch.Tensor], List[torch.Tensor]]:
-        """Postprocess a batch of predictions and convert it to graph nodes
+            self.detection_cell_postprocessor = detection_cell_postprocessor
+            self.run_conf = run_conf
 
-        Returns the complete graph nodes (cell dictionary), the detection nodes (cell detection dictionary), the cell tokens and the cell positions
+        def convert_batch_to_graph_nodes(
+            self, predictions: dict, metadata: List[dict]
+        ) -> Tuple[List[dict], List[dict], List[torch.Tensor], List[torch.Tensor]]:
+            """Postprocess a batch of predictions and convert it to graph nodes
+
+            Returns the complete graph nodes (cell dictionary), the detection nodes (cell detection dictionary), the cell tokens and the cell positions
 
 
-        Args:
-            predictions (dict): predictions_ (dict): Network predictions with tokens. Keys (required):
-                * nuclei_binary_map: Binary Nucleus Predictions. Shape: (B, H, W, 2)
-                * nuclei_type_map: Type prediction of nuclei. Shape: (B, H, W, self.num_nuclei_classes,)
-                * hv_map: Horizontal-Vertical nuclei mapping. Shape: (B, H, W, 2)
-            metadata List[(dict)]: List of metadata dictionaries for each patch.
-                Each dictionary needs to contain the following keys:
-                * row: Row index of the patch
-                * col: Column index of the patch
-                Other keys are optional
+            Args:
+                predictions (dict): predictions_ (dict): Network predictions with tokens. Keys (required):
+                    * nuclei_binary_map: Binary Nucleus Predictions. Shape: (B, H, W, 2)
+                    * nuclei_type_map: Type prediction of nuclei. Shape: (B, H, W, self.num_nuclei_classes,)
+                    * hv_map: Horizontal-Vertical nuclei mapping. Shape: (B, H, W, 2)
+                metadata List[(dict)]: List of metadata dictionaries for each patch.
+                    Each dictionary needs to contain the following keys:
+                    * row: Row index of the patch
+                    * col: Column index of the patch
+                    Other keys are optional
 
-        Returns:
-            Tuple[List[dict], List[dict], List[torch.Tensor], List[torch.Tensor]]:
-                * List[dict]: Complete graph nodes (cell dictionary)
-                * List[dict]: Detection nodes (cell detection dictionary)
-                * List[torch.Tensor]: Cell tokens
-                * List[torch.Tensor]: Cell positions (centroid)
-        """
-        _, cell_dict_batch = self.detection_cell_postprocessor.post_process_batch(
-            predictions
-        )
-        tokens = predictions["tokens"].detach().to("cpu")
-
-        batch_complete = []
-        batch_detection = []
-        batch_cell_tokens = []
-        batch_cell_positions = []
-
-        for idx, (patch_cell_dict, patch_metadata) in enumerate(
-            zip(cell_dict_batch, metadata)
-        ):
-            (
-                patch_complete,
-                patch_detection,
-                patch_cell_tokens,
-                patch_cell_positions,
-            ) = self.convert_patch_to_graph_nodes(
-                patch_cell_dict, patch_metadata, tokens[idx]
+            Returns:
+                Tuple[List[dict], List[dict], List[torch.Tensor], List[torch.Tensor]]:
+                    * List[dict]: Complete graph nodes (cell dictionary)
+                    * List[dict]: Detection nodes (cell detection dictionary)
+                    * List[torch.Tensor]: Cell tokens
+                    * List[torch.Tensor]: Cell positions (centroid)
+            """
+            _, cell_dict_batch = self.detection_cell_postprocessor.post_process_batch(
+                predictions
             )
-            batch_complete = batch_complete + patch_complete
-            batch_detection = batch_detection + patch_detection
-            batch_cell_tokens = batch_cell_tokens + patch_cell_tokens
-            batch_cell_positions = batch_cell_positions + patch_cell_positions
+            tokens = predictions["tokens"].detach().to("cpu")
 
-        if self.detection_cell_postprocessor.classifier is not None:
-            batch_cell_tokens_pt = torch.stack(batch_cell_tokens)
-            updated_preds = self.detection_cell_postprocessor.classifier(
-                batch_cell_tokens_pt
-            )
-            updated_preds = F.softmax(updated_preds, dim=1)
-            updated_classes = torch.argmax(updated_preds, dim=1)
-            updated_class_preds = updated_preds[
-                torch.arange(updated_classes.shape[0]), updated_classes
-            ]
+            batch_complete = []
+            batch_detection = []
+            batch_cell_tokens = []
+            batch_cell_positions = []
 
-            for f, z in zip(batch_complete, updated_classes):
-                f["type"] = int(z)
-            for f, z in zip(batch_complete, updated_class_preds):
-                f["type_prob"] = int(z)
-            for f, z in zip(batch_detection, updated_classes):
-                f["type"] = int(z)
-        if self.detection_cell_postprocessor.binary:
-            for f in batch_complete:
-                f["type"] = 1
-            for f in batch_detection:
-                f["type"] = 1
-            pass
-
-        return batch_complete, batch_detection, batch_cell_tokens, batch_cell_positions
-
-    def convert_patch_to_graph_nodes(
-        self, patch_cell_dict: dict, patch_metadata: dict, patch_tokens: torch.Tensor
-    ) -> Tuple[List[dict], List[dict], List[torch.Tensor], List[torch.Tensor]]:
-        """Extract information from a single patch and convert it to graph nodes for a global view
-
-        Args:
-            patch_cell_dict (dict): Dictionary containing the cell information.
-                Each dictionary needs to contain the following keys:
-                * bbox: Bounding box of the cell
-                * centroid: Centroid of the cell
-                * contour: Contour of the cell
-                * type_prob: Probability of the cell type
-                * type: Type of the cell
-            patch_metadata (dict): Metadata dictionary for the patch.
-                Each dictionary needs to contain the following keys:
-                * row: Row index of the patch
-                * col: Column index of the patch
-                Other keys are optional but are stored in the graph nodes for later use
-            patch_tokens (torch.Tensor): Tokens of the patch. Shape: (D, H, W)
-
-        Returns:
-            Tuple[List[dict], List[dict], List[torch.Tensor], List[torch.Tensor]]:
-                * List[dict]: Complete graph nodes (cell dictionary) of the patch
-                * List[dict]: Detection nodes (cell detection dictionary) of the patch
-                * List[torch.Tensor]: Cell tokens of the patch
-                * List[torch.Tensor]: Cell positions (centroid) of the patch
-        """
-        wsi = self.detection_cell_postprocessor.wsi
-        patch_cell_detection = {}
-        patch_cell_detection["patch_metadata"] = patch_metadata
-        patch_cell_detection["type_map"] = self.run_conf["dataset_config"][
-            "nuclei_types"
-        ]
-
-        wsi_scaling_factor = wsi.metadata["downsampling"]
-        patch_size = wsi.metadata["patch_size"]
-        x_global = int(
-            patch_metadata["row"] * patch_size * wsi_scaling_factor
-            - (patch_metadata["row"] + 0.5) * wsi.metadata["patch_overlap"]
-        )
-        y_global = int(
-            patch_metadata["col"] * patch_size * wsi_scaling_factor
-            - (patch_metadata["col"] + 0.5) * wsi.metadata["patch_overlap"]
-        )
-
-        cell_tokens = []
-        cell_positions = []
-        cell_complete = []
-        cell_detections = []
-
-        # extract cell information
-        for cell in patch_cell_dict.values():
-            if (
-                cell["type"]
-                == self.run_conf["dataset_config"]["nuclei_types"]["Background"]
+            for idx, (patch_cell_dict, patch_metadata) in enumerate(
+                zip(cell_dict_batch, metadata)
             ):
-                continue
-            offset_global = np.array([x_global, y_global])
-            centroid_global = np.rint(cell["centroid"] + np.flip(offset_global))
-            contour_global = cell["contour"] + np.flip(offset_global)
-            bbox_global = cell["bbox"] + offset_global
-            cell_dict = {
-                "bbox": bbox_global.tolist(),
-                "centroid": centroid_global.tolist(),
-                "contour": contour_global.tolist(),
-                "type_prob": cell["type_prob"],
-                "type": cell["type"],
-                "patch_coordinates": [
-                    patch_metadata["row"],
-                    patch_metadata["col"],
-                ],
-                "cell_status": get_cell_position_marging(
-                    bbox=cell["bbox"], patch_size=wsi.metadata["patch_size"], margin=64
-                ),
-                "offset_global": offset_global.tolist(),
-            }
-            cell_detection = {
-                "bbox": bbox_global.tolist(),
-                "centroid": centroid_global.tolist(),
-                "type": cell["type"],
-            }
-            if (
-                np.max(cell["bbox"]) == wsi.metadata["patch_size"]
-                or np.min(cell["bbox"]) == 0
-            ):  # Use overlap and patch size
-                position = get_cell_position(cell["bbox"], wsi.metadata["patch_size"])
-                cell_dict["edge_position"] = True
-                cell_dict["edge_information"] = {}
-                cell_dict["edge_information"]["position"] = position
-                cell_dict["edge_information"]["edge_patches"] = get_edge_patch(
-                    position, patch_metadata["row"], patch_metadata["col"]
+                (
+                    patch_complete,
+                    patch_detection,
+                    patch_cell_tokens,
+                    patch_cell_positions,
+                ) = self.convert_patch_to_graph_nodes(
+                    patch_cell_dict, patch_metadata, tokens[idx]
                 )
-            else:
-                cell_dict["edge_position"] = False
+                batch_complete = batch_complete + patch_complete
+                batch_detection = batch_detection + patch_detection
+                batch_cell_tokens = batch_cell_tokens + patch_cell_tokens
+                batch_cell_positions = batch_cell_positions + patch_cell_positions
 
-            bb_index = cell["bbox"] / self.run_conf["model"]["token_patch_size"]
-            bb_index[0, :] = np.floor(bb_index[0, :])
-            bb_index[1, :] = np.ceil(bb_index[1, :])
-            bb_index = bb_index.astype(np.uint8)
-            cell_token = patch_tokens[
-                :, bb_index[0, 0] : bb_index[1, 0], bb_index[0, 1] : bb_index[1, 1]
+            if self.detection_cell_postprocessor.classifier is not None:
+                if len(batch_cell_tokens) > 0:
+                    batch_cell_tokens_pt = torch.stack(batch_cell_tokens)
+                    updated_preds = self.detection_cell_postprocessor.classifier(
+                        batch_cell_tokens_pt
+                    )
+                    updated_preds = F.softmax(updated_preds, dim=1)
+                    updated_classes = torch.argmax(updated_preds, dim=1)
+                    updated_class_preds = updated_preds[
+                        torch.arange(updated_classes.shape[0]), updated_classes
+                    ]
+
+                    for f, z in zip(batch_complete, updated_classes):
+                        f["type"] = int(z)
+                    for f, z in zip(batch_complete, updated_class_preds):
+                        f["type_prob"] = int(z)
+                    for f, z in zip(batch_detection, updated_classes):
+                        f["type"] = int(z)
+            if self.detection_cell_postprocessor.binary:
+                for f in batch_complete:
+                    f["type"] = 1
+                for f in batch_detection:
+                    f["type"] = 1
+                pass
+
+            return (
+                batch_complete,
+                batch_detection,
+                batch_cell_tokens,
+                batch_cell_positions,
+            )
+
+        def convert_patch_to_graph_nodes(
+            self,
+            patch_cell_dict: dict,
+            patch_metadata: dict,
+            patch_tokens: torch.Tensor,
+        ) -> Tuple[List[dict], List[dict], List[torch.Tensor], List[torch.Tensor]]:
+            """Extract information from a single patch and convert it to graph nodes for a global view
+
+            Args:
+                patch_cell_dict (dict): Dictionary containing the cell information.
+                    Each dictionary needs to contain the following keys:
+                    * bbox: Bounding box of the cell
+                    * centroid: Centroid of the cell
+                    * contour: Contour of the cell
+                    * type_prob: Probability of the cell type
+                    * type: Type of the cell
+                patch_metadata (dict): Metadata dictionary for the patch.
+                    Each dictionary needs to contain the following keys:
+                    * row: Row index of the patch
+                    * col: Column index of the patch
+                    Other keys are optional but are stored in the graph nodes for later use
+                patch_tokens (torch.Tensor): Tokens of the patch. Shape: (D, H, W)
+
+            Returns:
+                Tuple[List[dict], List[dict], List[torch.Tensor], List[torch.Tensor]]:
+                    * List[dict]: Complete graph nodes (cell dictionary) of the patch
+                    * List[dict]: Detection nodes (cell detection dictionary) of the patch
+                    * List[torch.Tensor]: Cell tokens of the patch
+                    * List[torch.Tensor]: Cell positions (centroid) of the patch
+            """
+            wsi = self.detection_cell_postprocessor.wsi
+            patch_cell_detection = {}
+            patch_cell_detection["patch_metadata"] = patch_metadata
+            patch_cell_detection["type_map"] = self.run_conf["dataset_config"][
+                "nuclei_types"
             ]
-            cell_token = torch.mean(rearrange(cell_token, "D H W -> (H W) D"), dim=0)
 
-            cell_tokens.append(cell_token)
-            cell_positions.append(torch.Tensor(centroid_global))
-            cell_complete.append(cell_dict)
-            cell_detections.append(cell_detection)
+            wsi_scaling_factor = wsi.metadata["downsampling"]
+            patch_size = wsi.metadata["patch_size"]
+            x_global = int(
+                patch_metadata["row"] * patch_size
+                - (patch_metadata["row"] + 0.5) * wsi.metadata["patch_overlap"]
+            )
+            y_global = int(
+                patch_metadata["col"] * patch_size
+                - (patch_metadata["col"] + 0.5) * wsi.metadata["patch_overlap"]
+            )
 
-        return cell_complete, cell_detections, cell_tokens, cell_positions
+            cell_tokens = []
+            cell_positions = []
+            cell_complete = []
+            cell_detections = []
+
+            # extract cell information
+            for cell in patch_cell_dict.values():
+                if (
+                    cell["type"]
+                    == self.run_conf["dataset_config"]["nuclei_types"]["Background"]
+                ):
+                    continue
+                offset_global = np.array([x_global, y_global])
+                centroid_global = np.rint(
+                    (cell["centroid"] + np.flip(offset_global)) * wsi_scaling_factor
+                )  # TODO: check for 0.499 mpp slides
+                contour_global = (
+                    cell["contour"] + np.flip(offset_global)
+                ) * wsi_scaling_factor
+                bbox_global = (cell["bbox"] + offset_global) * wsi_scaling_factor
+                cell_dict = {
+                    "bbox": bbox_global.tolist(),
+                    "centroid": centroid_global.tolist(),
+                    "contour": contour_global.tolist(),
+                    "type_prob": cell["type_prob"],
+                    "type": cell["type"],
+                    "patch_coordinates": [
+                        patch_metadata["row"],
+                        patch_metadata["col"],
+                    ],
+                    "cell_status": get_cell_position_marging(
+                        bbox=cell["bbox"],
+                        patch_size=wsi.metadata["patch_size"],
+                        margin=64,
+                    ),
+                    "offset_global": offset_global.tolist(),
+                }
+                cell_detection = {
+                    "bbox": bbox_global.tolist(),
+                    "centroid": centroid_global.tolist(),
+                    "type": cell["type"],
+                }
+                if (
+                    np.max(cell["bbox"]) == wsi.metadata["patch_size"]
+                    or np.min(cell["bbox"]) == 0
+                ):  # Use overlap and patch size
+                    position = get_cell_position(
+                        cell["bbox"], wsi.metadata["patch_size"]
+                    )
+                    cell_dict["edge_position"] = True
+                    cell_dict["edge_information"] = {}
+                    cell_dict["edge_information"]["position"] = position
+                    cell_dict["edge_information"]["edge_patches"] = get_edge_patch(
+                        position, patch_metadata["row"], patch_metadata["col"]
+                    )
+                else:
+                    cell_dict["edge_position"] = False
+
+                bb_index = cell["bbox"] / self.run_conf["model"]["token_patch_size"]
+                bb_index[0, :] = np.floor(bb_index[0, :])
+                bb_index[1, :] = np.ceil(bb_index[1, :])
+                bb_index = bb_index.astype(np.uint8)
+                cell_token = patch_tokens[
+                    :, bb_index[0, 0] : bb_index[1, 0], bb_index[0, 1] : bb_index[1, 1]
+                ]
+                cell_token = torch.mean(
+                    rearrange(cell_token, "D H W -> (H W) D"), dim=0
+                )
+
+                cell_tokens.append(cell_token)
+                cell_positions.append(torch.Tensor(centroid_global))
+                cell_complete.append(cell_dict)
+                cell_detections.append(cell_detection)
+
+            return cell_complete, cell_detections, cell_tokens, cell_positions
+
+    return BatchPoolingActor
 
 
 def get_cell_position(bbox: np.ndarray, patch_size: int = 1024) -> List[int]:

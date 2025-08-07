@@ -26,7 +26,7 @@ def test_import():
     log_message("\nWorker sys.path:")
     for path in sys.path:
         log_message(f"  - {path}")
-    
+
     try:
         from cellvit.inference.postprocessing_cupy import DetectionCellPostProcessorCupy
         log_message("\nSuccessfully imported cellvit in worker!")
@@ -51,9 +51,11 @@ def main():
             "PYTHONPATH": project_root  # Set PYTHONPATH for workers
         }
     }
-    
+
     try:
-        ray.init(runtime_env=runtime_env)
+        print("Number of CPUs available:")
+        print(os.cpu_count())
+        ray.init(runtime_env=runtime_env, num_cpus=1)
         log_message("\nRay initialized successfully.")
     except Exception as e:
         log_message(f"Error initializing Ray: {str(e)}", level="ERROR")
