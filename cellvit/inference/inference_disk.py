@@ -147,6 +147,10 @@ class CellViTInference:
         compression: bool = False,
         subdir_name: str = None,
         enforce_mixed_precision: bool = False,
+        cpu_count: int = 16,
+        memory: int = 32768,
+        ray_worker: int =  2,
+        ray_remote_cpus: int =  6,
     ) -> None:
         if classifier_path is not None and binary is True:
             raise RuntimeError(
@@ -175,6 +179,10 @@ class CellViTInference:
         self.graph = graph
         self.compression = compression
         self.subdir_name = subdir_name
+        self.cpu_count = cpu_count
+        self.memory = memory
+        self.ray_worker = ray_worker
+        self.ray_remote_cpus = ray_remote_cpus
 
         self._instantiate_logger()
         self._load_model()
@@ -396,9 +404,9 @@ class CellViTInference:
 
         # init ray
         ray.init(
-            num_cpus= 32 - 2, # hardcode number of cpus at 32
+            num_cpus= self.cpu_count - 2, # use number of cpus from args
             runtime_env=runtime_env,
-            object_store_memory=0.3 * 131072 * 1024 * 1024, # hardcode memory at 128G (131071M)
+            object_store_memory=0.3 * self.memory * 1024 * 1024, # use memory in Mb from args
             include_dashboard=False,
             # logging_level=logging.INFO,
             log_to_driver=True,
@@ -419,12 +427,14 @@ class CellViTInference:
         #                 handler.setFormatter(formatter)
 
         # workers for loading data
-        num_workers = int(3 / 4 * 32) # hardcode number of cpus at 32
+        num_workers = int(3 / 4 * self.cpu_count) # use number of cpus from args
         if num_workers is None:
             num_workers = 8
         num_workers = int(np.clip(num_workers, 1, 4 * self.batch_size))
         self.num_workers = num_workers
-        self.ray_actors = 7 # hardcode number of ray workers at 7
+        self.ray_actors = self.ray_worker # use number of ray workers from args
+        self.logger.info(f"Using {self.cpu_count} CPUs in total")
+        self.logger.info(f"Using {self.memory}Mb memory in total")
         self.logger.info(f"Using {self.ray_actors} ray-workers")
 
     def process_wsi(

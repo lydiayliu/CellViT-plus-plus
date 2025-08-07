@@ -35,6 +35,10 @@ def main():
         compression=args["compression"],
         batch_size=args["batch_size"],
         enforce_mixed_precision=args["enforce_amp"],
+        cpu_count=args["cpu_count"],
+        memory=args["memory"],
+        ray_worker=args["ray_worker"],
+        ray_remote_cpus=args["ray_remote_cpus"],
     )
 
     if command.lower() == "process_wsi":

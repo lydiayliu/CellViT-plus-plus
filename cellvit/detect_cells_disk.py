@@ -40,6 +40,10 @@ def main():
         batch_size=args["batch_size"],
         subdir_name=args["outdir_subdir"],
         enforce_mixed_precision=args["enforce_amp"],
+        cpu_count=args["cpu_count"],
+        memory=args["memory"],
+        ray_worker=args["ray_worker"],
+        ray_remote_cpus=args["ray_remote_cpus"],
     )
 
     if command.lower() == "process_wsi":
