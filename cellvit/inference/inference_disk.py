@@ -382,26 +382,6 @@ class CellViTInference:
     def _setup_worker(self) -> None:
         """Setup the worker for inference"""
         runtime_env = {"env_vars": {"PYTHONPATH": project_root}}
-        # Set the global logging settings
-
-        # if self.debug:
-        #     include_dashboard = (
-        #         ray._private.utils.check_dashboard_dependencies_installed()
-        #     )
-        #     logging_level = logging.DEBUG
-        # else:
-        #     include_dashboard = False
-        #     logging_level = logging.INFO
-
-        # # ray logger setup
-        # formatter = None
-        # if self.logger.handlers:
-        #     for handler in self.logger.handlers:
-        #         if isinstance(handler, logging.StreamHandler) and hasattr(
-        #             handler, "formatter"
-        #         ):
-        #             formatter = handler.formatter
-        #             break
 
         # init ray
         ray.init(
@@ -412,20 +392,6 @@ class CellViTInference:
             # logging_level=logging.INFO,
             log_to_driver=True,
         )
-        # # overwrite rays logger style
-        # if formatter is not None:
-        #     ray_loggers = [
-        #         logging.getLogger("ray"),
-        #         logging.getLogger("ray.worker"),
-        #         logging.getLogger("ray.remote_function"),
-        #         logging.getLogger("ray._private"),  # Covers internal modules
-        #     ]
-
-        #     for ray_logger in ray_loggers:
-        #         # Modify existing handlers (preserves Ray's logging destinations)
-        #         for handler in ray_logger.handlers:
-        #             if isinstance(handler, logging.StreamHandler):
-        #                 handler.setFormatter(formatter)
 
         # workers for loading data
         num_workers = int(3 / 4 * self.cpu_count) # use number of cpus from args
@@ -473,9 +439,10 @@ class CellViTInference:
 
         # global postprocessor
         BatchPoolingActor = create_batch_pooling_actor(
-            # hardcode cpu usage of each ray worker to 4
-            num_cpus = 4
+            # use number of ray worker cpus from args
+            num_cpus = self.ray_remote_cpus
         )
+        self.logger.info(f"Using {self.ray_remote_cpus} CPUs per ray worker")
 
         postprocessor = DetectionCellPostProcessorCupy(
             wsi=wsi,
