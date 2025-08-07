@@ -23,7 +23,7 @@ from cellvit.data.dataclass.cell_graph import CellGraphDataWSI
 from cellvit.data.dataclass.wsi import WSIMetadata
 from cellvit.inference.inference_disk import CellViTInference
 from cellvit.inference.postprocessing_cupy import (
-    BatchPoolingActor,
+    create_batch_pooling_actor,
     DetectionCellPostProcessorCupy,
 )
 from pathopatch.patch_extraction.dataset import (
@@ -126,6 +126,11 @@ class CellViTInferenceMemory(CellViTInference):
         self.outdir.mkdir(exist_ok=True, parents=True)
 
         # global postprocessor
+        BatchPoolingActor = create_batch_pooling_actor(
+            # hardcode cpu usage of each ray worker to 4
+            num_cpus = 4
+        )
+
         postprocessor = DetectionCellPostProcessorCupy(
             wsi=wsi,
             nr_types=self.run_conf["data"]["num_nuclei_classes"],

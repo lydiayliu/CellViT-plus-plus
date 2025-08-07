@@ -39,7 +39,7 @@ from cellvit.data.dataclass.cell_graph import CellGraphDataWSI
 from cellvit.data.dataclass.wsi import WSI, PatchedWSIInference
 from cellvit.inference.overlap_cell_cleaner import OverlapCellCleaner
 from cellvit.inference.postprocessing_cupy import (
-    BatchPoolingActor,
+    create_batch_pooling_actor,
     DetectionCellPostProcessorCupy,
 )
 from cellvit.models.cell_segmentation.cellvit import CellViT
@@ -421,6 +421,11 @@ class CellViTInference:
         outdir.mkdir(exist_ok=True, parents=True)
 
         # global postprocessor
+        BatchPoolingActor = create_batch_pooling_actor(
+            # hardcode cpu usage of each ray worker to 4
+            num_cpus = 4
+        )
+
         postprocessor = DetectionCellPostProcessorCupy(
             wsi=wsi,
             nr_types=self.run_conf["data"]["num_nuclei_classes"],
