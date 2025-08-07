@@ -269,7 +269,7 @@ class CellViTInference:
         if classifier_path is None:
             self.classifier = None
         else:
-            model_checkpoint = torch.load(classifier_path, map_location="cpu")
+            model_checkpoint = torch.load(classifier_path, map_location="cpu", weights_only=False)
             run_conf = unflatten_dict(model_checkpoint["config"], ".")
 
             model = LinearClassifier(
