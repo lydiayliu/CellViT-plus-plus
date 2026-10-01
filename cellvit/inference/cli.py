@@ -20,6 +20,47 @@ def parse_wsi_properties(wsi_properties_str):
         raise argparse.ArgumentTypeError(f"Invalid JSON format: {wsi_properties_str}")
 
 
+def add_system_arguments(parser: argparse.ArgumentParser) -> None:
+    # defaults match CellViTInference.__init__
+    parser.add_argument(
+        "--cpu_count",
+        type=int,
+        help="Number of CPU cores to use for inference",
+        default=16,
+    )
+    parser.add_argument("--memory", type=int, help="RAM in MB to use", default=32768)
+    parser.add_argument(
+        "--ray_worker",
+        type=int,
+        help="Number of ray worker to use for inference (each ray worker uses 4-8 CPUs)",
+        default=2,
+    )
+    parser.add_argument(
+        "--ray_remote_cpus",
+        type=int,
+        help="Number of CPUs per ray worker (MUST ensure that ray_remote_cpus * ray_worker <= cpu_count - 2)",
+        default=6,
+    )
+    parser.add_argument(
+        "--no_ray",
+        action="store_true",
+        help="Run postprocessing in the main process instead of ray workers. "
+        "Needed when GPUs are in Exclusive_Process compute mode (check: nvidia-smi --query-gpu=compute_mode --format=csv)",
+    )
+
+
+def check_system_arguments(opt: dict) -> None:
+    if opt["no_ray"]:
+        return
+    # ray.init gets cpu_count - 2 CPUs; actors needing more are never scheduled
+    ray_cpus = opt["cpu_count"] - 2
+    assert ray_cpus >= 1, "cpu_count must be at least 3 (2 are reserved outside ray)"
+    assert opt["ray_worker"] * opt["ray_remote_cpus"] <= ray_cpus, (
+        f"ray_worker * ray_remote_cpus ({opt['ray_worker']} * {opt['ray_remote_cpus']}) "
+        f"must be <= cpu_count - 2 ({ray_cpus}), otherwise ray workers never start"
+    )
+
+
 class InferenceWSIParser:
     """Parser for in-memory calculation"""
 
@@ -95,22 +136,7 @@ class InferenceWSIParser:
             action="store_true",
             help="Set this flag to export results as snappy compressed file",
         )
-        parser.add_argument(
-            "--cpu_count", type=int, help="Number of CPU cores to use for inference"
-        )
-        parser.add_argument(
-            "--memory", type=int, help="RAM in MB to use"
-        )
-        parser.add_argument(
-            "--ray_worker",
-            type=int,
-            help="Number of ray worker to use for inference (each ray worker uses 4-8 CPUs)",
-        )
-        parser.add_argument(
-            "--ray_remote_cpus",
-            type=int,
-            help="Number of CPUs per ray worker (MUST ensure that ray_remote_cpus * ray_worker <= cpu_count - 2)"
-        )
+        add_system_arguments(parser)
         subparsers = parser.add_subparsers(
             dest="command",
             description="Main run command for either performing inference on single WSI-file or on whole dataset",
@@ -182,6 +208,7 @@ class InferenceWSIParser:
             0 <= opt["gpu"] < torch.cuda.device_count()
         ), f"GPU parameter must be a valid GPU-ID between 0 and {torch.cuda.device_count()-1}"
         assert type(opt["gpu"]) == int, "GPU must be an integer"
+        check_system_arguments(opt)
 
         assert opt["resolution"] in [0.25, 0.5], "Resolution must be either 0.25 or 0.5"
         if opt["resolution"] == 0.5:
@@ -290,6 +317,7 @@ class InferenceWSIParserDisk:
             action="store_true",
             help="Set this flag to export results as additional geojson files for loading them into Software like QuPath.",
         )
+        add_system_arguments(parser)
 
         # subparsers for either loading a WSI or a WSI folder
 
@@ -361,3 +389,4 @@ class InferenceWSIParserDisk:
         # gpu
         assert torch.cuda.is_available(), "Cuda is not available"
         assert 0 <= opt["gpu"] < torch.cuda.device_count(), "GPU ID is not valid"
+        check_system_arguments(opt)

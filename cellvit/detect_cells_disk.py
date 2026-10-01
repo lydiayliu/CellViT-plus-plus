@@ -44,6 +44,7 @@ def main():
         memory=args["memory"],
         ray_worker=args["ray_worker"],
         ray_remote_cpus=args["ray_remote_cpus"],
+        no_ray=args["no_ray"],
     )
 
     if command.lower() == "process_wsi":

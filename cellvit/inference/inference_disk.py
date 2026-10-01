@@ -39,6 +39,7 @@ from cellvit.data.dataclass.cell_graph import CellGraphDataWSI
 from cellvit.data.dataclass.wsi import WSI, PatchedWSIInference
 from cellvit.inference.overlap_cell_cleaner import OverlapCellCleaner
 from cellvit.inference.postprocessing_cupy import (
+    BatchPooling,
     create_batch_pooling_actor,
     DetectionCellPostProcessorCupy,
 )
@@ -151,6 +152,7 @@ class CellViTInference:
         memory: int = 32768,
         ray_worker: int =  2,
         ray_remote_cpus: int =  6,
+        no_ray: bool = False,
     ) -> None:
         if classifier_path is not None and binary is True:
             raise RuntimeError(
@@ -183,6 +185,7 @@ class CellViTInference:
         self.memory = memory
         self.ray_worker = ray_worker
         self.ray_remote_cpus = ray_remote_cpus
+        self.no_ray = no_ray
 
         self._instantiate_logger()
         self._load_model()
@@ -384,14 +387,17 @@ class CellViTInference:
         runtime_env = {"env_vars": {"PYTHONPATH": project_root}}
 
         # init ray
-        ray.init(
-            num_cpus= self.cpu_count - 2, # use number of cpus from args
-            runtime_env=runtime_env,
-            object_store_memory=0.3 * self.memory * 1024 * 1024, # use memory in Mb from args
-            include_dashboard=False,
-            # logging_level=logging.INFO,
-            log_to_driver=True,
-        )
+        if not self.no_ray:
+            ray.init(
+                num_cpus= self.cpu_count - 2, # use number of cpus from args
+                runtime_env=runtime_env,
+                object_store_memory=0.3 * self.memory * 1024 * 1024, # use memory in Mb from args
+                include_dashboard=False,
+                # logging_level=logging.INFO,
+                log_to_driver=True,
+            )
+            # shows whether ray detected the GPU (actors request GPU: 0.1)
+            self.logger.info(f"Ray cluster resources: {ray.cluster_resources()}")
 
         # workers for loading data
         num_workers = int(3 / 4 * self.cpu_count) # use number of cpus from args
@@ -402,7 +408,10 @@ class CellViTInference:
         self.ray_actors = self.ray_worker # use number of ray workers from args
         self.logger.info(f"Using {self.cpu_count} CPUs in total")
         self.logger.info(f"Using {self.memory}Mb memory in total")
-        self.logger.info(f"Using {self.ray_actors} ray-workers")
+        if self.no_ray:
+            self.logger.info("Ray disabled: postprocessing runs in the main process")
+        else:
+            self.logger.info(f"Using {self.ray_actors} ray-workers")
 
     def process_wsi(
         self,
@@ -438,11 +447,12 @@ class CellViTInference:
         outdir.mkdir(exist_ok=True, parents=True)
 
         # global postprocessor
-        BatchPoolingActor = create_batch_pooling_actor(
-            # use number of ray worker cpus from args
-            num_cpus = self.ray_remote_cpus
-        )
-        self.logger.info(f"Using {self.ray_remote_cpus} CPUs per ray worker")
+        if not self.no_ray:
+            BatchPoolingActor = create_batch_pooling_actor(
+                # use number of ray worker cpus from args
+                num_cpus = self.ray_remote_cpus
+            )
+            self.logger.info(f"Using {self.ray_remote_cpus} CPUs per ray worker")
 
         postprocessor = DetectionCellPostProcessorCupy(
             wsi=wsi,
@@ -451,11 +461,15 @@ class CellViTInference:
         )
 
         # create ray actors for batch-wise postprocessing
-        batch_pooling_actors = [
-            BatchPoolingActor.remote(postprocessor, self.run_conf)
-            for i in range(self.ray_actors)
-        ]
+        if self.no_ray:
+            batch_pooler = BatchPooling(postprocessor, self.run_conf)
+        else:
+            batch_pooling_actors = [
+                BatchPoolingActor.remote(postprocessor, self.run_conf)
+                for i in range(self.ray_actors)
+            ]
         call_ids = []
+        inference_results = []
 
         with torch.no_grad():
             pbar = tqdm.tqdm(
@@ -464,7 +478,6 @@ class CellViTInference:
             for batch_num, batch in enumerate(wsi_inference_dataloader):
                 patches = batch[0].to(self.device)
                 metadata = batch[1]
-                batch_actor = batch_pooling_actors[batch_num % self.ray_actors]
 
                 if self.mixed_precision:
                     with torch.autocast(device_type="cuda", dtype=torch.float16):
@@ -472,16 +485,29 @@ class CellViTInference:
                 else:
                     predictions = self.model.forward(patches, retrieve_tokens=True)
                 predictions = self.apply_softmax_reorder(predictions)
-                call_id = batch_actor.convert_batch_to_graph_nodes.remote(
-                    predictions, metadata
-                )
-                call_ids.append(call_id)
+                if self.no_ray:
+                    # postprocess here: Exclusive_Process GPUs reject a second CUDA context from a ray worker
+                    inference_results.append(
+                        batch_pooler.convert_batch_to_graph_nodes(predictions, metadata)
+                    )
+                else:
+                    batch_actor = batch_pooling_actors[batch_num % self.ray_actors]
+                    call_id = batch_actor.convert_batch_to_graph_nodes.remote(
+                        predictions, metadata
+                    )
+                    call_ids.append(call_id)
                 pbar.update(1)
+                # collect every 50 batches so pending predictions don't pile up in ray's object store
+                if len(call_ids) >= 50:
+                    inference_results.extend(ray.get(call_ids))
+                    call_ids = []
 
-            self.logger.info("Waiting for final batches to be processed...")
-            inference_results = [ray.get(call_id) for call_id in call_ids]
+            if not self.no_ray:
+                self.logger.info("Waiting for final batches to be processed...")
+                inference_results.extend(ray.get(call_ids))
         del pbar
-        [ray.kill(batch_actor) for batch_actor in batch_pooling_actors]
+        if not self.no_ray:
+            [ray.kill(batch_actor) for batch_actor in batch_pooling_actors]
 
         # unpack inference results
         cell_dict_wsi = []  # for storing all cell information
